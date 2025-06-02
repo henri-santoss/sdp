@@ -171,53 +171,65 @@ if menu_option == "Controle de Acesso":
         if st.button("Consultar Placa"):
             if plate_input and system.validate_plate(plate_input):
                 vehicle_info = system.get_vehicle_info(plate_input)
-                if vehicle_info:
-                    plate, model, brand, color, v_type, name, position, tag_id, photo = vehicle_info
-                    
-                    st.success("🚘 Veículo encontrado - Acesso LIBERADO")
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        st.subheader("Informações do Veículo")
-                        st.write(f"**Placa:** {plate}")
-                        st.write(f"**Modelo/Marca:** {model} / {brand}")
-                        st.write(f"**Cor:** {color}")
-                        st.write(f"**Tipo:** {v_type}")
-                    
-                    with col2:
-                        st.subheader("Informações do Colaborador")
-                        st.write(f"**Nome:** {name}")
-                        st.write(f"**Cargo:** {position}")
-                        st.write(f"**Tag ID:** {tag_id}")
+                with st.container():
+                    if vehicle_info:
+                        plate, model, brand, color, v_type, name, position, tag_id, photo = vehicle_info
                         
-                        if photo:
-                            st.image(Image.open(io.BytesIO(photo)), caption="Foto do Colaborador", width=150)
+                        st.success("🚘 Veículo encontrado")
+                        
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.subheader("Informações do Veículo")
+                            st.write(f"**Placa:** {plate}")
+                            st.write(f"**Modelo/Marca:** {model} / {brand}")
+                            st.write(f"**Cor:** {color}")
+                            st.write(f"**Tipo:** {v_type}")
+                        
+                        with col2:
+                            st.subheader("Informações do Colaborador")
+                            st.write(f"**Nome:** {name}")
+                            st.write(f"**Cargo:** {position}")
+                            st.write(f"**Tag ID:** {tag_id}")
+                            
+                            if photo:
+                                st.image(Image.open(io.BytesIO(photo)), caption="Foto do Colaborador", width=150)
+                    else:
+                        st.error("⚠️ Veículo não cadastrado")
                     
-                    system.register_access(plate, True, notes_plate)
+                    # Botões de ação
+                    col1, col2, _ = st.columns([1, 1, 3])
+                    with col1:
+                        if st.button("✔ Liberar Acesso", key="approve_access", type="secondary"):
+                            system.register_access(plate_input, True, notes_plate)
+                            st.success(f"Acesso LIBERADO para veículo {plate_input}")
+                    with col2:
+                        if st.button("✘ Reprovar Acesso", key="deny_access", type="primary"):
+                            system.register_access(plate_input, False, notes_plate)
+                            st.error(f"Acesso REPROVADO para veículo {plate_input}")
                     
-                    # Exibir últimos acessos
-                    cursor = system.conn.cursor()
-                    cursor.execute('''
-                        SELECT data_hora, acesso_permitido, observacoes
-                        FROM acessos a
-                        JOIN veiculos v ON a.veiculo_id = v.id
-                        WHERE v.placa = ?
-                        ORDER BY a.data_hora DESC LIMIT 5
-                    ''', (plate,))
-                    accesses = cursor.fetchall()
-                    if accesses:
-                        st.subheader("Últimos Acessos")
-                        df = pd.DataFrame(
-                            accesses,
-                            columns=["Data/Hora", "Status", "Observações"],
-                            index=range(1, len(accesses) + 1)
-                        )
-                        df["Status"] = df["Status"].apply(lambda x: "LIBERADO" if x else "NEGADO")
-                        st.dataframe(df)
-                else:
-                    st.error("⚠️ Veículo não cadastrado - Acesso NEGADO")
-                    system.register_access(plate_input, False, notes_plate)
+                    # Histórico de acessos em um expander
+                    if vehicle_info:
+                        with st.expander("Ver últimos acessos"):
+                            cursor = system.conn.cursor()
+                            cursor.execute('''
+                                SELECT data_hora, acesso_permitido, observacoes
+                                FROM acessos a
+                                JOIN veiculos v ON a.veiculo_id = v.id
+                                WHERE v.placa = ?
+                                ORDER BY a.data_hora DESC LIMIT 5
+                            ''', (plate_input,))
+                            accesses = cursor.fetchall()
+                            if accesses:
+                                df = pd.DataFrame(
+                                    accesses,
+                                    columns=["Data/Hora", "Status", "Observações"],
+                                    index=range(1, len(accesses) + 1)
+                                )
+                                df["Status"] = df["Status"].apply(lambda x: "LIBERADO" if x else "NEGADO")
+                                st.dataframe(df)
+                            else:
+                                st.info("Nenhum acesso registrado para este veículo.")
             else:
                 st.warning("Formato de placa inválido. Use o padrão Mercosul (ex.: ABC1D23) ou antigo (ex.: ABC1234)")
     
@@ -276,7 +288,7 @@ elif menu_option == "Cadastros":
         with st.form("employee_form"):
             st.subheader("Novo Colaborador")
             emp_name = st.text_input("Nome Completo")
-            emp_position = st.selectbox("Cargo", ["Sócio","Diretor", "Gerente", "Coordenador", "Analista", "Assistente", "Outro"])
+            emp_position = st.selectbox("Cargo", ["Diretor", "Gerente", "Coordenador", "Analista", "Assistente", "Outro"])
             emp_tag = st.text_input("Número da Tag")
             emp_photo = st.file_uploader("Foto do Colaborador", type=["jpg", "png", "jpeg"])
             
@@ -389,4 +401,3 @@ elif menu_option == "Relatórios":
             )
         else:
             st.info("Nenhum registro de acesso encontrado")
-            
