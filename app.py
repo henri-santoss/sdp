@@ -117,7 +117,7 @@ class VehicleAccessSystem:
     def add_employee(self, name, position, tag_id, photo=None):
         try:
             cursor = self.conn.cursor()
-            employee_id = str(uuid.uuid4())  # Gera um UUID como texto
+            employee_id = str(uuid.uuid4())
             cursor.execute('''
                 INSERT INTO colaboradores (id, nome, cargo, tag_id, foto)
                 VALUES (?, ?, ?, ?, ?)
@@ -161,7 +161,7 @@ system = VehicleAccessSystem()
 
 st.title("🚗 Sistema de Controle de Acesso - Carbon")
 
-# CSS para personalizar as cores dos botões
+# CSS para personalizar as cores dos botões e o "OU"
 st.markdown("""
     <style>
     /* Botão Liberar Acesso (verde) */
@@ -182,6 +182,13 @@ st.markdown("""
     div.stButton > button[kind="secondary"]:hover {
         background-color: #c82333 !important;
     }
+    /* Estilo para o "OU" */
+    .or-label {
+        font-size: 16px;
+        color: #666;
+        text-align: left;
+        margin: 10px 0;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -191,12 +198,10 @@ menu_option = st.sidebar.selectbox("Menu", ["Controle de Acesso", "Cadastros", "
 if menu_option == "Controle de Acesso":
     st.header("Registro de Acesso")
 
-    # Inputs para busca por placa e nome na mesma página
-    col1, col2 = st.columns(2)
-    with col1:
-        plate_input = st.text_input("Digite a placa do veículo (ex.: ABC1D23 ou ABC1234):", key="plate_input").upper()
-    with col2:
-        name_input = st.text_input("Digite o nome do colaborador (ex.: Marcelo):", key="name_input")
+    # Inputs para busca por placa e nome, com "OU" entre eles
+    plate_input = st.text_input("Digite a placa do veículo (ex.: ABC1D23 ou ABC1234):", key="plate_input").upper()
+    st.markdown('<div class="or-label">OU</div>', unsafe_allow_html=True)
+    name_input = st.text_input("Digite o nome do colaborador (ex.: Marcelo):", key="name_input")
     
     notes = st.text_area("Observações (opcional):", key="notes_access")
 
@@ -319,6 +324,27 @@ if menu_option == "Controle de Acesso":
                     options=df_vehicles["Placa"],
                     key=f"vehicle_select_{emp_id}"
                 )
+                
+                # Exibir informações do veículo selecionado
+                vehicle_info = system.get_vehicle_info(selected_vehicle)
+                if vehicle_info:
+                    plate, model, brand, color, v_type, name, position, tag_id, photo = vehicle_info
+                    st.success(f"🚘 Veículo selecionado: {plate}")
+                    col_v1, col_v2 = st.columns(2)
+                    with col_v1:
+                        st.subheader("Informações do Veículo")
+                        st.write(f"**Placa:** {plate}")
+                        st.write(f"**Modelo/Marca:** {model} / {brand}")
+                        st.write(f"**Cor:** {color}")
+                        st.write(f"**Tipo:** {v_type}")
+                    with col_v2:
+                        st.subheader("Informações do Colaborador")
+                        st.write(f"**Nome:** {name}")
+                        st.write(f"**Cargo:** {position}")
+                        st.write(f"**Tag ID:** {tag_id}")
+                        if photo:
+                            st.image(Image.open(io.BytesIO(photo)), caption="Foto do Colaborador", width=150)
+
                 col_btn1, col_btn2, _ = st.columns([1, 1, 3])
                 with col_btn1:
                     if st.button("✔ Liberar Acesso", key=f"approve_vehicle_{emp_id}", type="primary"):
@@ -334,6 +360,28 @@ if menu_option == "Controle de Acesso":
                             st.success(message)
                         else:
                             st.error(message)
+
+                # Histórico de acessos para o veículo selecionado
+                with st.expander("Ver últimos acessos"):
+                    cursor = system.conn.cursor()
+                    cursor.execute('''
+                        SELECT data_hora, acesso_permitido, observacoes
+                        FROM acessos a
+                        JOIN veiculos v ON a.veiculo_id = v.id
+                        WHERE v.placa = ?
+                        ORDER BY a.data_hora DESC LIMIT 5
+                    ''', (selected_vehicle,))
+                    accesses = cursor.fetchall()
+                    if accesses:
+                        df = pd.DataFrame(
+                            accesses,
+                            columns=["Data/Hora", "Status", "Observações"],
+                            index=range(1, len(accesses) + 1)
+                        )
+                        df["Status"] = df["Status"].apply(lambda x: "LIBERADO" if x else "NEGADO")
+                        st.dataframe(df)
+                    else:
+                        st.info("Nenhum acesso registrado para este veículo.")
             else:
                 st.info("Nenhum veículo associado a este colaborador.")
 
