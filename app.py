@@ -87,6 +87,25 @@ class VehicleAccessSystem:
         ''', (employee_id,))
         return cursor.fetchall()
 
+    def get_employee_by_id(self, employee_id):
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT id, nome, cargo, tag_id, foto
+            FROM colaboradores
+            WHERE id = ? AND ativo = 1
+        ''', (employee_id,))
+        return cursor.fetchone()
+
+    def get_vehicle_by_plate(self, plate):
+        cursor = self.conn.cursor()
+        plate = plate.replace(" ", "").replace("-", "").upper()
+        cursor.execute('''
+            SELECT id, placa, modelo, marca, cor, tipo_veiculo, colaborador_id
+            FROM veiculos
+            WHERE placa = ?
+        ''', (plate,))
+        return cursor.fetchone()
+
     def register_access(self, plate, allowed, notes=""):
         try:
             cursor = self.conn.cursor()
@@ -128,6 +147,30 @@ class VehicleAccessSystem:
             st.error("Tag ID já cadastrada")
             return None
 
+    def update_employee(self, employee_id, name, position, tag_id, photo=None):
+        try:
+            cursor = self.conn.cursor()
+            if photo:
+                cursor.execute('''
+                    UPDATE colaboradores
+                    SET nome = ?, cargo = ?, tag_id = ?, foto = ?
+                    WHERE id = ?
+                ''', (name, position, tag_id, photo, employee_id))
+            else:
+                cursor.execute('''
+                    UPDATE colaboradores
+                    SET nome = ?, cargo = ?, tag_id = ?
+                    WHERE id = ?
+                ''', (name, position, tag_id, employee_id))
+            self.conn.commit()
+            return cursor.rowcount > 0
+        except sqlite3.IntegrityError:
+            st.error("Tag ID já cadastrada")
+            return False
+        except sqlite3.Error as e:
+            st.error(f"Erro ao atualizar colaborador: {str(e)}")
+            return False
+
     def update_employee_photo(self, employee_id, photo):
         try:
             cursor = self.conn.cursor()
@@ -156,6 +199,23 @@ class VehicleAccessSystem:
         except sqlite3.IntegrityError:
             return False, "Placa já cadastrada"
 
+    def update_vehicle(self, vehicle_id, plate, model, brand, color, employee_id, vehicle_type):
+        if not self.validate_plate(plate):
+            return False, "Placa inválida (use padrão Mercosul AAA0A00 ou antigo AAA0000)"
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                UPDATE veiculos
+                SET placa = ?, modelo = ?, marca = ?, cor = ?, colaborador_id = ?, tipo_veiculo = ?
+                WHERE id = ?
+            ''', (plate.upper(), model, brand, color, employee_id, vehicle_type, vehicle_id))
+            self.conn.commit()
+            return cursor.rowcount > 0, "Veículo atualizado com sucesso"
+        except sqlite3.IntegrityError:
+            return False, "Placa já cadastrada"
+        except sqlite3.Error as e:
+            return False, f"Erro ao atualizar veículo: {str(e)}"
+
 # Interface Streamlit
 system = VehicleAccessSystem()
 
@@ -174,7 +234,7 @@ st.markdown("""
         background-color: #218838 !important;
     }
     /* Botão Reprovar Acesso (vermelho) */
-    div.stButton > button[kind="secondary"] {
+    div.stButtonDEPDIR f.button > button[kind="secondary"] {
         background-color: #dc3545 !important;
         color: white !important;
         border: none !important;
@@ -387,15 +447,57 @@ if menu_option == "Controle de Acesso":
 
 elif menu_option == "Cadastros":
     st.header("Cadastros")
-    tab1, tab2, tab3 = st.tabs(["Cadastrar Colaborador", "Cadastrar Veículo", "Atualizar Foto do Colaborador"])
-    
+    tab1, tab2, tab3 = st.tabs(["Cadastrar/Editar Colaborador", "Cadastrar/Editar Veículo", "Atualizar Foto do Colaborador"])
+
     with tab1:
+        st.subheader("Pesquisar e Editar Colaborador")
+        name_search = st.text_input("Digite o nome do colaborador para buscar (ex.: Marcelo):", key="employee_search")
+        if st.button("Buscar Colaborador", key="search_employee"):
+            if name_search:
+                employees = system.get_employees_by_name(name_search)
+                if employees:
+                    employee_options = {f"{emp[1]} (ID:{emp[0]})": emp[0] for emp in employees}
+                    selected_employee = st.selectbox("Selecione o colaborador", options=list(employee_options.keys()), key="select_employee")
+                    employee_id = employee_options[selected_employee]
+                    employee_data = system.get_employee_by_id(employee_id)
+                    if employee_data:
+                        st.session_state['selected_employee_data'] = employee_data
+                    else:
+                        st.error("Colaborador não encontrado.")
+                else:
+                    st.warning("Nenhum colaborador encontrado com este nome.")
+            else:
+                st.warning("Digite um nome para buscar.")
+
+        if 'selected_employee_data' in st.session_state and st.session_state['selected_employee_data']:
+            emp_id, emp_name, emp_position, emp_tag, emp_photo = st.session_state['selected_employee_data']
+            with st.form("edit_employee_form"):
+                st.subheader("Editar Colaborador")
+                new_name = st.text_input("Nome Completo", value=emp_name)
+                new_position = st.selectbox("Cargo", ["Diretor", "Gerente", "Coordenador", "Analista", "Assistente", "Outro"], index=["Diretor", "Gerente", "Coordenador", "Analista", "Assistente", "Outro"].index(emp_position) if emp_position in ["Diretor", "Gerente", "Coordenador", "Analista", "Assistente", "Outro"] else 5)
+                new_tag = st.text_input("Número da Tag", value=emp_tag)
+                new_photo = st.file_uploader("Nova Foto do Colaborador", type=["jpg", "png", "jpeg"], key=f"edit_photo_{emp_id}")
+                if emp_photo:
+                    st.image(Image.open(io.BytesIO(emp_photo)), caption="Foto Atual", width=150)
+                submitted = st.form_submit_button("Atualizar Colaborador")
+                if submitted:
+                    if new_name and new_position and new_tag:
+                        photo_bytes = new_photo.read() if new_photo else emp_photo
+                        success = system.update_employee(emp_id, new_name, new_position, new_tag, photo_bytes)
+                        if success:
+                            st.success("Colaborador atualizado com sucesso!")
+                            st.session_state['selected_employee_data'] = None
+                        else:
+                            st.error("Falha ao atualizar colaborador.")
+                    else:
+                        st.error("Preencha todos os campos obrigatórios")
+
+        st.subheader("Novo Colaborador")
         with st.form("employee_form"):
-            st.subheader("Novo Colaborador")
-            emp_name = st.text_input("Nome Completo")
-            emp_position = st.selectbox("Cargo", ["Diretor", "Gerente", "Coordenador", "Analista", "Assistente", "Outro"])
-            emp_tag = st.text_input("Número da Tag")
-            emp_photo = st.file_uploader("Foto do Colaborador", type=["jpg", "png", "jpeg"])
+            emp_name = st.text_input("Nome Completo", key="new_employee_name")
+            emp_position = st.selectbox("Cargo", ["Diretor", "Gerente", "Coordenador", "Analista", "Assistente", "Outro"], key="new_employee_position")
+            emp_tag = st.text_input("Número da Tag", key="new_employee_tag")
+            emp_photo = st.file_uploader("Foto do Colaborador", type=["jpg", "png", "jpeg"], key="new_employee_photo")
             submitted = st.form_submit_button("Cadastrar")
             if submitted:
                 if emp_name and emp_position and emp_tag:
@@ -407,20 +509,62 @@ elif menu_option == "Cadastros":
                         st.success("Colaborador cadastrado com sucesso!")
                 else:
                     st.error("Preencha todos os campos obrigatórios")
-    
+
     with tab2:
+        st.subheader("Pesquisar e Editar Veículo")
+        plate_search = st.text_input("Digite a placa do veículo (ex.: ABC1D23 ou ABC1234):", key="vehicle_search").upper()
+        if st.button("Buscar Veículo", key="search_vehicle"):
+            if plate_search:
+                if system.validate_plate(plate_search):
+                    vehicle_data = system.get_vehicle_by_plate(plate_search)
+                    if vehicle_data:
+                        st.session_state['selected_vehicle_data'] = vehicle_data
+                    else:
+                        st.error(f"⚠️ Veículo com placa {plate_search} não cadastrado")
+                else:
+                    st.warning("Formato de placa inválido. Use o padrão Mercosul (ex.: ABC1D23) ou antigo (ex.: ABC1234)")
+            else:
+                st.warning("Digite uma placa para buscar.")
+
+        if 'selected_vehicle_data' in st.session_state and st.session_state['selected_vehicle_data']:
+            vehicle_id, plate, model, brand, color, v_type, owner_id = st.session_state['selected_vehicle_data']
+            cursor = system.conn.cursor()
+            cursor.execute("SELECT id, nome FROM colaboradores")
+            employees = cursor.fetchall()
+            employee_options = {f"{e[1]} (ID:{e[0]})": e[0] for e in employees}
+            with st.form("edit_vehicle_form"):
+                st.subheader("Editar Veículo")
+                new_plate = st.text_input("Placa (Mercosul ou antigo)", value=plate, key="edit_vehicle_plate")
+                new_model = st.text_input("Modelo", value=model, key="edit_vehicle_model")
+                new_brand = st.text_input("Marca", value=brand, key="edit_vehicle_brand")
+                new_color = st.text_input("Cor", value=color, key="edit_vehicle_color")
+                new_vehicle_type = st.selectbox("Tipo de Veículo", ["Diretor", "Gerente", "Funcionario", "Visitante"], index=["Diretor", "Gerente", "Funcionario", "Visitante"].index(v_type) if v_type in ["Diretor", "Gerente", "Funcionario", "Visitante"] else 0, key="edit_vehicle_type")
+                new_owner = st.selectbox("Proprietário", options=list(employee_options.keys()), index=list(employee_options.values()).index(owner_id) if owner_id in employee_options.values() else 0, key="edit_vehicle_owner")
+                submitted = st.form_submit_button("Atualizar Veículo")
+                if submitted:
+                    if new_plate and new_model and new_brand and new_color:
+                        owner_id = employee_options[new_owner]
+                        success, message = system.update_vehicle(vehicle_id, new_plate, new_model, new_brand, new_color, owner_id, new_vehicle_type)
+                        if success:
+                            st.success(message)
+                            st.session_state['selected_vehicle_data'] = None
+                        else:
+                            st.error(message)
+                    else:
+                        st.error("Preencha todos os campos obrigatórios")
+
+        st.subheader("Novo Veículo")
         cursor = system.conn.cursor()
         cursor.execute("SELECT id, nome FROM colaboradores")
         employees = cursor.fetchall()
         employee_options = {f"{e[1]} (ID:{e[0]})": e[0] for e in employees}
         with st.form("vehicle_form"):
-            st.subheader("Novo Veículo")
-            vehicle_plate = st.text_input("Placa (Mercosul ou antigo)").upper()
-            vehicle_model = st.text_input("Modelo")
-            vehicle_brand = st.text_input("Marca")
-            vehicle_color = st.text_input("Cor")
-            vehicle_type = st.selectbox("Tipo de Veículo", ["Diretor", "Gerente", "Funcionario", "Visitante"])
-            vehicle_owner = st.selectbox("Proprietário", options=list(employee_options.keys()))
+            vehicle_plate = st.text_input("Placa (Mercosul ou antigo)", key="new_vehicle_plate").upper()
+            vehicle_model = st.text_input("Modelo", key="new_vehicle_model")
+            vehicle_brand = st.text_input("Marca", key="new_vehicle_brand")
+            vehicle_color = st.text_input("Cor", key="new_vehicle_color")
+            vehicle_type = st.selectbox("Tipo de Veículo", ["Diretor", "Gerente", "Funcionario", "Visitante"], key="new_vehicle_type")
+            vehicle_owner = st.selectbox("Proprietário", options=list(employee_options.keys()), key="new_vehicle_owner")
             submitted = st.form_submit_button("Cadastrar")
             if submitted:
                 if vehicle_plate and vehicle_model and vehicle_brand and vehicle_color:
@@ -435,7 +579,7 @@ elif menu_option == "Cadastros":
                         st.error(message)
                 else:
                     st.error("Preencha todos os campos obrigatórios")
-    
+
     with tab3:
         st.subheader("Atualizar Foto do Colaborador")
         name_input = st.text_input("Digite o nome do colaborador (ex.: Henri):")
