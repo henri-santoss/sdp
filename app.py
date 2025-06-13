@@ -1,3 +1,5 @@
+
+# Execute com: streamlit run app.py
 import streamlit as st
 import sqlite3
 from datetime import datetime
@@ -6,9 +8,16 @@ import pandas as pd
 from PIL import Image
 import io
 import uuid
+import cv2
+import pytesseract
+import numpy as np
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
 
 # Configuração inicial do Streamlit
 st.set_page_config(page_title="Controle de Acesso Carbon", layout="wide", page_icon="🚗")
+
+# Configuração do Tesseract (descomente e ajuste o caminho se necessário)
+# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 class VehicleAccessSystem:
     def __init__(self):
@@ -31,11 +40,11 @@ class VehicleAccessSystem:
             CREATE TABLE IF NOT EXISTS veiculos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 placa TEXT UNIQUE NOT NULL,
-                modelo TEXT,
+                modelo TEXT NOT NULL,
                 marca TEXT,
                 cor TEXT,
                 colaborador_id TEXT,
-                tipo_veiculo TEXT CHECK(tipo_veiculo IN ('Diretor', 'Gerente', 'Funcionario', 'Visitante')),
+                tipo_veiculo TEXT CHECK(tipo_veiculo IN ('Vendedor', 'Diretor', 'Gerente', 'Funcionario', 'Visitante')),
                 FOREIGN KEY (colaborador_id) REFERENCES colaboradores(id)
             )
         ''')
@@ -44,163 +53,155 @@ class VehicleAccessSystem:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 veiculo_id INTEGER,
                 data_hora TEXT NOT NULL,
-                acesso_permitido BOOLEAN,
+                acesso_permitido BOOLEAN NOT NULL,
                 observacoes TEXT,
                 FOREIGN KEY (veiculo_id) REFERENCES veiculos(id)
             )
         ''')
         self.conn.commit()
 
-    def validate_plate(self, plate):
-        plate = plate.replace(" ", "").replace("-", "").upper()
+    def validate_plate(self, placa):
+        placa = placa.replace(" ", "").replace("-", "").upper()
         mercosul_pattern = r'^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$'
         old_pattern = r'^[A-Z]{3}[0-9]{4}$'
-        return bool(re.match(mercosul_pattern, plate) or re.match(old_pattern, plate))
+        return bool(re.match(mercosul_pattern, placa) or re.match(old_pattern, placa))
 
-    def get_vehicle_info(self, plate):
+    def get_vehicle_info(self, placa):
         cursor = self.conn.cursor()
-        plate = plate.replace(" ", "").replace("-", "").upper()
+        placa = placa.replace(" ", "").replace("-", "").upper()
         cursor.execute('''
             SELECT v.placa, v.modelo, v.marca, v.cor, v.tipo_veiculo,
                    c.nome, c.cargo, c.tag_id, c.foto
             FROM veiculos v
             JOIN colaboradores c ON v.colaborador_id = c.id
             WHERE v.placa = ?
-        ''', (plate,))
+        ''', (placa,))
         return cursor.fetchone()
 
-    def get_employees_by_name(self, name):
+    def get_employees_by_name(self, nome):
         cursor = self.conn.cursor()
         cursor.execute('''
             SELECT id, nome, cargo, tag_id, foto
             FROM colaboradores
             WHERE nome LIKE ? AND ativo = 1
-        ''', (f'%{name}%',))
+        ''', (f'%{nome}%',))
         return cursor.fetchall()
 
-    def get_vehicles_by_employee(self, employee_id):
+    def get_vehicles_by_employee(self, colaborador_id):
         cursor = self.conn.cursor()
         cursor.execute('''
             SELECT placa, modelo, marca, cor, tipo_veiculo
             FROM veiculos
             WHERE colaborador_id = ?
-        ''', (employee_id,))
+        ''', (colaborador_id,))
         return cursor.fetchall()
 
-    def get_employee_by_id(self, employee_id):
+    def get_employee_by_id(self, colaborador_id):
         cursor = self.conn.cursor()
         cursor.execute('''
-            SELECT id, nome, cargo, tag_id, foto
+            SELECT id, nome, cargo, tag_id
             FROM colaboradores
             WHERE id = ? AND ativo = 1
-        ''', (employee_id,))
+        ''', (colaborador_id,))
         return cursor.fetchone()
 
-    def get_vehicle_by_plate(self, plate):
+    def get_vehicle_by_plate(self, placa):
         cursor = self.conn.cursor()
-        plate = plate.replace(" ", "").replace("-", "").upper()
+        placa = placa.replace(" ", "").replace("-", "").upper()
         cursor.execute('''
             SELECT id, placa, modelo, marca, cor, tipo_veiculo, colaborador_id
             FROM veiculos
             WHERE placa = ?
-        ''', (plate,))
+        ''', (placa,))
         return cursor.fetchone()
 
-    def register_access(self, plate, allowed, notes=""):
+    def register_access(self, placa, permitido, observacoes=""):
         try:
             cursor = self.conn.cursor()
-            plate = plate.replace(" ", "").replace("-", "").upper()
-            cursor.execute("SELECT id FROM veiculos WHERE placa = ?", (plate,))
-            vehicle_id = cursor.fetchone()
-            if vehicle_id:
+            placa = placa.replace(" ", "").replace("-", "").upper()
+            cursor.execute("SELECT id FROM veiculos WHERE placa = ?", (placa,))
+            veiculo_id = cursor.fetchone()
+            if veiculo_id:
                 data_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 cursor.execute('''
                     INSERT INTO acessos (veiculo_id, data_hora, acesso_permitido, observacoes)
                     VALUES (?, ?, ?, ?)
-                ''', (vehicle_id[0], data_hora, allowed, notes))
+                ''', (veiculo_id[0], data_hora, permitido, observacoes))
                 self.conn.commit()
-                cursor.execute('''
-                    SELECT id FROM acessos 
-                    WHERE veiculo_id = ? AND data_hora = ? AND acesso_permitido = ?
-                ''', (vehicle_id[0], data_hora, allowed))
-                inserted = cursor.fetchone()
-                if inserted:
-                    return True, f"Acesso registrado com sucesso para placa {plate} (ID: {inserted[0]})"
-                else:
-                    return False, f"Falha ao registrar acesso para placa {plate}: não encontrado após inserção"
+                return True, f"Acesso registrado com sucesso para placa {placa}"
             else:
-                return False, f"Veículo com placa {plate} não encontrado no banco de dados"
+                return False, f"Veículo com placa {placa} não encontrado"
         except sqlite3.Error as e:
-            return False, f"Erro ao registrar acesso para placa {plate}: {str(e)}"
+            return False, f"Erro ao registrar acesso: {e}"
 
-    def add_employee(self, name, position, tag_id, photo=None):
+    def add_employee(self, nome, cargo, tag_id, foto=None):
         try:
             cursor = self.conn.cursor()
-            employee_id = str(uuid.uuid4())
+            colaborador_id = str(uuid.uuid4())
             cursor.execute('''
                 INSERT INTO colaboradores (id, nome, cargo, tag_id, foto)
                 VALUES (?, ?, ?, ?, ?)
-            ''', (employee_id, name, position, tag_id, photo))
+            ''', (colaborador_id, nome, cargo, tag_id, foto))
             self.conn.commit()
-            return employee_id
+            return colaborador_id
         except sqlite3.IntegrityError:
             st.error("Tag ID já cadastrada")
             return None
 
-    def update_employee(self, employee_id, name, position, tag_id, photo=None):
+    def update_employee(self, colaborador_id, nome, cargo, tag_id, foto=None):
         try:
             cursor = self.conn.cursor()
-            if photo:
+            if foto:
                 cursor.execute('''
                     UPDATE colaboradores
                     SET nome = ?, cargo = ?, tag_id = ?, foto = ?
                     WHERE id = ?
-                ''', (name, position, tag_id, photo, employee_id))
+                ''', (nome, cargo, tag_id, foto, colaborador_id))
             else:
                 cursor.execute('''
                     UPDATE colaboradores
                     SET nome = ?, cargo = ?, tag_id = ?
                     WHERE id = ?
-                ''', (name, position, tag_id, employee_id))
+                ''', (nome, cargo, tag_id, colaborador_id))
             self.conn.commit()
             return cursor.rowcount > 0
         except sqlite3.IntegrityError:
             st.error("Tag ID já cadastrada")
             return False
         except sqlite3.Error as e:
-            st.error(f"Erro ao atualizar colaborador: {str(e)}")
+            st.error(f"Erro ao atualizar colaborador: {e}")
             return False
 
-    def update_employee_photo(self, employee_id, photo):
+    def update_employee_photo(self, colaborador_id, foto):
         try:
             cursor = self.conn.cursor()
             cursor.execute('''
                 UPDATE colaboradores
                 SET foto = ?
                 WHERE id = ?
-            ''', (photo, employee_id))
+            ''', (foto, colaborador_id))
             self.conn.commit()
             return cursor.rowcount > 0
         except sqlite3.Error as e:
-            st.error(f"Erro ao atualizar foto: {str(e)}")
+            st.error(f"Erro ao atualizar foto: {e}")
             return False
 
-    def add_vehicle(self, plate, model, brand, color, employee_id, vehicle_type):
-        if not self.validate_plate(plate):
+    def add_vehicle(self, placa, modelo, marca, cor, colaborador_id, tipo_veiculo):
+        if not self.validate_plate(placa):
             return False, "Placa inválida (use padrão Mercosul AAA0A00 ou antigo AAA0000)"
         try:
             cursor = self.conn.cursor()
             cursor.execute('''
                 INSERT INTO veiculos (placa, modelo, marca, cor, colaborador_id, tipo_veiculo)
                 VALUES (?, ?, ?, ?, ?, ?)
-            ''', (plate.upper(), model, brand, color, employee_id, vehicle_type))
+            ''', (placa.upper(), modelo, marca, cor, colaborador_id, tipo_veiculo))
             self.conn.commit()
             return True, "Veículo cadastrado com sucesso"
         except sqlite3.IntegrityError:
             return False, "Placa já cadastrada"
 
-    def update_vehicle(self, vehicle_id, plate, model, brand, color, employee_id, vehicle_type):
-        if not self.validate_plate(plate):
+    def update_vehicle(self, veiculo_id, placa, modelo, marca, cor, colaborador_id, tipo_veiculo):
+        if not self.validate_plate(placa):
             return False, "Placa inválida (use padrão Mercosul AAA0A00 ou antigo AAA0000)"
         try:
             cursor = self.conn.cursor()
@@ -208,46 +209,101 @@ class VehicleAccessSystem:
                 UPDATE veiculos
                 SET placa = ?, modelo = ?, marca = ?, cor = ?, colaborador_id = ?, tipo_veiculo = ?
                 WHERE id = ?
-            ''', (plate.upper(), model, brand, color, employee_id, vehicle_type, vehicle_id))
+            ''', (placa.upper(), modelo, marca, cor, colaborador_id, tipo_veiculo, veiculo_id))
             self.conn.commit()
             return cursor.rowcount > 0, "Veículo atualizado com sucesso"
         except sqlite3.IntegrityError:
             return False, "Placa já cadastrada"
         except sqlite3.Error as e:
-            return False, f"Erro ao atualizar veículo: {str(e)}"
+            return False, f"Erro ao atualizar veículo: {e}"
+
+# Processador de vídeo para captura de placa
+class PlateVideoProcessor(VideoProcessorBase):
+    def __init__(self):
+        self.frame = None
+
+    def recv(self, frame):
+        self.frame = frame.to_ndarray(format="bgr")
+        return frame
+
+# Pré-processamento de imagem para OCR
+def preprocess_image_for_ocr(imagem):
+    gray = cv2.cvtColor(imagem, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
+    denoised = cv2.GaussianBlur(thresh, (5, 5), 0)
+    return denoised
+
+# Extração de texto da placa
+def extract_plate_text(imagem):
+    try:
+        processed_image = preprocess_image_for_ocr(imagem)
+        custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+        text = pytesseract.image_to_string(processed_image, config=custom_config)
+        text = re.sub(r'[^A-Z0-9]', '', text.upper()).strip()
+        if re.match(r'^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$', text) or re.match(r'^[A-Z]{3}[0-9]{4}$', text):
+            return text
+        return None
+    except Exception as e:
+        st.error(f"Erro ao processar imagem: {e}")
+        return None
 
 # Interface Streamlit
 system = VehicleAccessSystem()
 
 st.title("🚗 Sistema de Controle de Acesso - Carbon")
 
-# CSS para personalizar as cores dos botões e o "OU"
+# Estilização CSS
 st.markdown("""
     <style>
-    /* Botão Liberar Acesso (verde) */
     div.stButton > button[kind="primary"] {
         background-color: #28a745 !important;
         color: white !important;
         border: none !important;
+        padding: 12px 24px !important;
+        font-size: 16px !important;
+        min-width: 120px !important;
+        margin: 5px !important;
+        border-radius: 8px !important;
     }
     div.stButton > button[kind="primary"]:hover {
         background-color: #218838 !important;
     }
-    /* Botão Reprovar Acesso (vermelho) */
-    div.stButtonDEPDIR f.button > button[kind="secondary"] {
+    div.stButton > button[kind="secondary"] {
         background-color: #dc3545 !important;
         color: white !important;
         border: none !important;
+        padding: 12px 24px !important;
+        font-size: 16px !important;
+        min-width: 120px !important;
+        margin: 5px !important;
+        border-radius: 8px !important;
     }
     div.stButton > button[kind="secondary"]:hover {
         background-color: #c82333 !important;
     }
-    /* Estilo para o "OU" */
     .or-label {
         font-size: 16px;
         color: #666;
         text-align: left;
         margin: 10px 0;
+    }
+    @media (max-width: 600px) {
+        div.stButton > button {
+            width: 100% !important;
+            margin-bottom: 10px !important;
+        }
+        .stColumn {
+            flex-direction: column !important;
+            width: 100% !important;
+        }
+        .stTextInput > div > input {
+            font-size: 16px !important;
+            padding: 10px !important;
+        }
+        .stTextArea > div > textarea {
+            font-size: 16px !important;
+            padding: 10px !important;
+        }
     }
     </style>
 """, unsafe_allow_html=True)
@@ -258,28 +314,50 @@ menu_option = st.sidebar.selectbox("Menu", ["Controle de Acesso", "Cadastros", "
 if menu_option == "Controle de Acesso":
     st.header("Registro de Acesso")
 
-    # Inputs para busca por placa e nome, com "OU" entre eles
-    plate_input = st.text_input("Digite a placa do veículo (ex.: ABC1D23 ou ABC1234):", key="plate_input").upper()
-    st.markdown('<div class="or-label">OU</div>', unsafe_allow_html=True)
-    name_input = st.text_input("Digite o nome do colaborador (ex.: Marcelo):", key="name_input")
-    
-    notes = st.text_area("Observações (opcional):", key="notes_access")
-
-    # Estado para armazenar informações do veículo encontrado
+    if 'form_key' not in st.session_state:
+        st.session_state.form_key = str(uuid.uuid4())
     if 'vehicle_info' not in st.session_state:
         st.session_state.vehicle_info = None
     if 'employees' not in st.session_state:
         st.session_state.employees = []
+    if 'captured_plate' not in st.session_state:
+        st.session_state.captured_plate = ""
 
-    # Botão para consultar
-    if st.button("Consultar"):
+    with st.form(key=st.session_state.form_key):
+        plate_input = st.text_input("Digite a placa do veículo (ex.: ABC1D23 ou ABC1234):", value=st.session_state.captured_plate, key="plate_input").upper()
+        st.markdown('<div class="or-label">OU</div>', unsafe_allow_html=True)
+        name_input = st.text_input("Digite o nome do colaborador (ex.: Marcelo):", key="name_input")
+        notes = st.text_area("Observações (opcional):", key="notes_access")
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            search_submitted = st.form_submit_button("Consultar")
+        with col2:
+            capture_button = st.form_submit_button("📷 Capturar Placa")
+
+    if capture_button:
         st.session_state.vehicle_info = None
         st.session_state.employees = []
-        
+        ctx = webrtc_streamer(
+            key="plate-capture",
+            video_processor_factory=PlateVideoProcessor,
+            media_stream_constraints={"video": True, "audio": False},
+        )
+        if ctx.video_processor and ctx.video_processor.frame is not None:
+            st.image(ctx.video_processor.frame, channels="BGR", caption="Imagem Capturada")
+            plate_text = extract_plate_text(ctx.video_processor.frame)
+            if plate_text:
+                st.session_state.captured_plate = plate_text
+                st.success(f"Placa detectada: {plate_text}")
+                st.session_state.form_key = str(uuid.uuid4())
+            else:
+                st.warning("Nenhuma placa válida detectada. Tente novamente ou digite manualmente.")
+
+    if search_submitted:
+        st.session_state.vehicle_info = None
+        st.session_state.employees = []
         if not plate_input and not name_input:
             st.warning("Digite uma placa ou um nome para buscar.")
         else:
-            # Busca por placa
             if plate_input:
                 if system.validate_plate(plate_input):
                     vehicle_info = system.get_vehicle_info(plate_input)
@@ -289,8 +367,6 @@ if menu_option == "Controle de Acesso":
                         st.error(f"⚠️ Veículo com placa {plate_input} não cadastrado")
                 else:
                     st.warning("Formato de placa inválido. Use o padrão Mercosul (ex.: ABC1D23) ou antigo (ex.: ABC1234)")
-
-            # Busca por nome
             if name_input:
                 employees = system.get_employees_by_name(name_input)
                 if employees:
@@ -298,7 +374,6 @@ if menu_option == "Controle de Acesso":
                 else:
                     st.warning("Nenhum colaborador encontrado com este nome.")
 
-    # Exibir resultados da busca por placa
     if st.session_state.vehicle_info:
         plate, model, brand, color, v_type, name, position, tag_id, photo = st.session_state.vehicle_info
         st.success(f"🚘 Veículo encontrado: {plate}")
@@ -317,13 +392,16 @@ if menu_option == "Controle de Acesso":
             if photo:
                 st.image(Image.open(io.BytesIO(photo)), caption="Foto do Colaborador", width=150)
 
-        # Botões de ação para a placa
         col_btn1, col_btn2, _ = st.columns([1, 1, 3])
         with col_btn1:
             if st.button("✔ Liberar Acesso", key=f"approve_plate_{plate}", type="primary"):
                 success, message = system.register_access(plate, True, notes)
                 if success:
                     st.success(message)
+                    st.session_state.vehicle_info = None
+                    st.session_state.employees = []
+                    st.session_state.captured_plate = ""
+                    st.session_state.form_key = str(uuid.uuid4())
                 else:
                     st.error(message)
         with col_btn2:
@@ -331,10 +409,13 @@ if menu_option == "Controle de Acesso":
                 success, message = system.register_access(plate, False, notes)
                 if success:
                     st.success(message)
+                    st.session_state.vehicle_info = None
+                    st.session_state.employees = []
+                    st.session_state.captured_plate = ""
+                    st.session_state.form_key = str(uuid.uuid4())
                 else:
                     st.error(message)
 
-        # Histórico de acessos
         with st.expander("Ver últimos acessos"):
             cursor = system.conn.cursor()
             cursor.execute('''
@@ -356,7 +437,6 @@ if menu_option == "Controle de Acesso":
             else:
                 st.info("Nenhum acesso registrado para este veículo.")
 
-    # Exibir resultados da busca por nome
     if st.session_state.employees:
         st.subheader("Colaboradores Encontrados")
         for emp in st.session_state.employees:
@@ -370,7 +450,7 @@ if menu_option == "Controle de Acesso":
             with col_e2:
                 if emp_photo:
                     st.image(Image.open(io.BytesIO(emp_photo)), caption="Foto do Colaborador", width=100)
-            
+
             vehicles = system.get_vehicles_by_employee(emp_id)
             if vehicles:
                 st.write("**Veículos Associados:**")
@@ -384,8 +464,7 @@ if menu_option == "Controle de Acesso":
                     options=df_vehicles["Placa"],
                     key=f"vehicle_select_{emp_id}"
                 )
-                
-                # Exibir informações do veículo selecionado
+
                 vehicle_info = system.get_vehicle_info(selected_vehicle)
                 if vehicle_info:
                     plate, model, brand, color, v_type, name, position, tag_id, photo = vehicle_info
@@ -411,6 +490,10 @@ if menu_option == "Controle de Acesso":
                         success, message = system.register_access(selected_vehicle, True, notes)
                         if success:
                             st.success(message)
+                            st.session_state.vehicle_info = None
+                            st.session_state.employees = []
+                            st.session_state.captured_plate = ""
+                            st.session_state.form_key = str(uuid.uuid4())
                         else:
                             st.error(message)
                 with col_btn2:
@@ -418,10 +501,13 @@ if menu_option == "Controle de Acesso":
                         success, message = system.register_access(selected_vehicle, False, notes)
                         if success:
                             st.success(message)
+                            st.session_state.vehicle_info = None
+                            st.session_state.employees = []
+                            st.session_state.captured_plate = ""
+                            st.session_state.form_key = str(uuid.uuid4())
                         else:
                             st.error(message)
 
-                # Histórico de acessos para o veículo selecionado
                 with st.expander("Ver últimos acessos"):
                     cursor = system.conn.cursor()
                     cursor.execute('''
@@ -470,7 +556,7 @@ elif menu_option == "Cadastros":
                 st.warning("Digite um nome para buscar.")
 
         if 'selected_employee_data' in st.session_state and st.session_state['selected_employee_data']:
-            emp_id, emp_name, emp_position, emp_tag, emp_photo = st.session_state['selected_employee_data']
+            emp_id, emp_name, emp_position, emp_tag = st.session_state['selected_employee_data']
             with st.form("edit_employee_form"):
                 st.subheader("Editar Colaborador")
                 new_name = st.text_input("Nome Completo", value=emp_name)
@@ -570,7 +656,7 @@ elif menu_option == "Cadastros":
                 if vehicle_plate and vehicle_model and vehicle_brand and vehicle_color:
                     owner_id = employee_options[vehicle_owner]
                     success, message = system.add_vehicle(
-                        vehicle_plate, vehicle_model, vehicle_brand, 
+                        vehicle_plate, vehicle_model, vehicle_brand,
                         vehicle_color, owner_id, vehicle_type
                     )
                     if success:
@@ -616,7 +702,7 @@ elif menu_option == "Relatórios":
     if st.button("Gerar Relatório"):
         cursor = system.conn.cursor()
         query = '''
-            SELECT a.data_hora, v.placa, v.modelo, v.marca, c.nome, c.cargo, 
+            SELECT a.data_hora, v.placa, v.modelo, v.marca, c.nome, c.cargo,
                    CASE WHEN a.acesso_permitido THEN 'LIBERADO' ELSE 'NEGADO' END as status
             FROM acessos a
             JOIN veiculos v ON a.veiculo_id = v.id
