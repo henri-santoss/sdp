@@ -98,7 +98,7 @@ class VehicleAccessSystem:
     def get_employee_by_id(self, colaborador_id):
         cursor = self.conn.cursor()
         cursor.execute('''
-            SELECT id, nome, cargo, tag_id
+            SELECT id, nome, cargo, tag_id, foto
             FROM colaboradores
             WHERE id = ? AND ativo = 1
         ''', (colaborador_id,))
@@ -216,20 +216,28 @@ class VehicleAccessSystem:
         except sqlite3.Error as e:
             return False, f"Erro ao atualizar veículo: {e}"
 
-# Pré-processamento de imagem para OCR
+# Pré-processamento de imagem para OCR (melhorado)
 def preprocess_image_for_ocr(imagem):
+    # Converter para escala de cinza
     gray = cv2.cvtColor(imagem, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
+    # Equalização de histograma para melhorar contraste
+    gray = cv2.equalizeHist(gray)
+    # Aplicar limiar adaptativo
+    thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+    # Desfoque para reduzir ruído
     denoised = cv2.GaussianBlur(thresh, (5, 5), 0)
     return denoised
 
-# Extração de texto da placa
+# Extração de texto da placa (com depuração)
 def extract_plate_text(imagem):
     try:
         processed_image = preprocess_image_for_ocr(imagem)
-        custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+        # Configurações otimizadas do Tesseract
+        custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
         text = pytesseract.image_to_string(processed_image, config=custom_config)
+        st.write(f"Texto bruto extraído: '{text}'")  # Depuração
         text = re.sub(r'[^A-Z0-9]', '', text.upper()).strip()
+        # Validação de placa
         if re.match(r'^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$', text) or re.match(r'^[A-Z]{3}[0-9]{4}$', text):
             return text
         return None
@@ -327,6 +335,7 @@ if menu_option == "Controle de Acesso":
     if capture_button:
         st.session_state.vehicle_info = None
         st.session_state.employees = []
+        st.info("Tire a foto com boa iluminação e a placa bem enquadrada.")
         camera_image = st.camera_input("Capturar Placa")
         if camera_image is not None:
             img = Image.open(camera_image)
@@ -545,16 +554,16 @@ elif menu_option == "Cadastros":
                 st.warning("Digite um nome para buscar.")
 
         if 'selected_employee_data' in st.session_state and st.session_state['selected_employee_data']:
-            emp_id, emp_name, emp_position, emp_tag = st.session_state['selected_employee_data']
+            emp_id, emp_name, emp_position, emp_tag, emp_photo = st.session_state['selected_employee_data']
             with st.form("edit_employee_form"):
                 st.subheader("Editar Colaborador")
-                new_name = st.text_input("Nome Completo", value=emp_name)
-                new_position = st.selectbox("Cargo", ["Diretor", "Gerente", "Coordenador", "Analista", "Assistente", "Outro"], index=["Diretor", "Gerente", "Coordenador", "Analista", "Assistente", "Outro"].index(emp_position) if emp_position in ["Diretor", "Gerente", "Coordenador", "Analista", "Assistente", "Outro"] else 5)
-                new_tag = st.text_input("Número da Tag", value=emp_tag)
+                new_name = st.text_input("Nome Completo", value=emp_name, key=f"edit_name_{emp_id}")
+                new_position = st.selectbox("Cargo", ["Diretor", "Gerente", "Coordenador", "Analista", "Assistente", "Outro"], index=["Diretor", "Gerente", "Coordenador", "Analista", "Assistente", "Outro"].index(emp_position) if emp_position in ["Diretor", "Gerente", "Coordenador", "Analista", "Assistente", "Outro"] else 5, key=f"edit_position_{emp_id}")
+                new_tag = st.text_input("Número da Tag", value=emp_tag, key=f"edit_tag_{emp_id}")
                 new_photo = st.file_uploader("Nova Foto do Colaborador", type=["jpg", "png", "jpeg"], key=f"edit_photo_{emp_id}")
                 if emp_photo:
                     st.image(Image.open(io.BytesIO(emp_photo)), caption="Foto Atual", width=150)
-                submitted = st.form_submit_button("Atualizar Colaborador")
+                submitted = st.form_submit_button("Atualizar Colaborador")  # Corrigido: Botão dentro do formulário
                 if submitted:
                     if new_name and new_position and new_tag:
                         photo_bytes = new_photo.read() if new_photo else emp_photo
