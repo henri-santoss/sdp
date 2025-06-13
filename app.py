@@ -11,7 +11,6 @@ import uuid
 import cv2
 import pytesseract
 import numpy as np
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
 
 # Configuração inicial do Streamlit
 st.set_page_config(page_title="Controle de Acesso Carbon", layout="wide", page_icon="🚗")
@@ -217,15 +216,6 @@ class VehicleAccessSystem:
         except sqlite3.Error as e:
             return False, f"Erro ao atualizar veículo: {e}"
 
-# Processador de vídeo para captura de placa
-class PlateVideoProcessor(VideoProcessorBase):
-    def __init__(self):
-        self.frame = None
-
-    def recv(self, frame):
-        self.frame = frame.to_ndarray(format="bgr")
-        return frame
-
 # Pré-processamento de imagem para OCR
 def preprocess_image_for_ocr(imagem):
     gray = cv2.cvtColor(imagem, cv2.COLOR_BGR2GRAY)
@@ -337,14 +327,13 @@ if menu_option == "Controle de Acesso":
     if capture_button:
         st.session_state.vehicle_info = None
         st.session_state.employees = []
-        ctx = webrtc_streamer(
-            key="plate-capture",
-            video_processor_factory=PlateVideoProcessor,
-            media_stream_constraints={"video": True, "audio": False},
-        )
-        if ctx.video_processor and ctx.video_processor.frame is not None:
-            st.image(ctx.video_processor.frame, channels="BGR", caption="Imagem Capturada")
-            plate_text = extract_plate_text(ctx.video_processor.frame)
+        camera_image = st.camera_input("Capturar Placa")
+        if camera_image is not None:
+            img = Image.open(camera_image)
+            img_array = np.array(img)
+            img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+            st.image(img_bgr, channels="BGR", caption="Imagem Capturada")
+            plate_text = extract_plate_text(img_bgr)
             if plate_text:
                 st.session_state.captured_plate = plate_text
                 st.success(f"Placa detectada: {plate_text}")
@@ -723,3 +712,4 @@ elif menu_option == "Relatórios":
             )
         else:
             st.info("Nenhum registro de acesso encontrado")
+
