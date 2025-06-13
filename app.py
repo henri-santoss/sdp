@@ -216,24 +216,46 @@ class VehicleAccessSystem:
         except sqlite3.Error as e:
             return False, f"Erro ao atualizar veículo: {e}"
 
-# Pré-processamento de imagem para OCR (melhorado)
+# Pré-processamento de imagem para OCR (com detecção de contornos)
 def preprocess_image_for_ocr(imagem):
+    # Redimensionar para melhorar a resolução
+    scale_percent = 150  # Aumentar em 50%
+    width = int(imagem.shape[1] * scale_percent / 100)
+    height = int(imagem.shape[0] * scale_percent / 100)
+    imagem = cv2.resize(imagem, (width, height), interpolation=cv2.INTER_CUBIC)
+    
     # Converter para escala de cinza
     gray = cv2.cvtColor(imagem, cv2.COLOR_BGR2GRAY)
-    # Equalização de histograma para melhorar contraste
+    # Equalização de histograma
     gray = cv2.equalizeHist(gray)
-    # Aplicar limiar adaptativo
+    # Detectar bordas com Canny
+    edges = cv2.Canny(gray, 100, 200)
+    # Encontrar contornos
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        # Selecionar o maior contorno (provavelmente a placa)
+        largest_contour = max(contours, key=cv2.contourArea)
+        x, y, w, h = cv2.boundingRect(largest_contour)
+        # Verificar se o contorno é grande o suficiente (evitar ruídos)
+        if w > 50 and h > 20:
+            cropped = gray[y:y+h, x:x+w]
+            # Limiar adaptativo na região recortada
+            thresh = cv2.adaptiveThreshold(cropped, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+            return thresh, cropped
+    # Fallback: usar a imagem inteira se não encontrar contornos
     thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
-    # Desfoque para reduzir ruído
-    denoised = cv2.GaussianBlur(thresh, (5, 5), 0)
-    return denoised
+    return thresh, gray
 
 # Extração de texto da placa (com depuração)
 def extract_plate_text(imagem):
     try:
-        processed_image = preprocess_image_for_ocr(imagem)
-        # Configurações otimizadas do Tesseract
-        custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+        # Obter imagem pré-processada e imagem recortada para depuração
+        processed_image, debug_image = preprocess_image_for_ocr(imagem)
+        # Exibir imagem pré-processada para depuração
+        st.image(processed_image, caption="Imagem Pré-processada para OCR", use_column_width=True)
+        st.image(debug_image, caption="Imagem Recortada (se aplicável)", use_column_width=True)
+        # Configurações do Tesseract
+        custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-'
         text = pytesseract.image_to_string(processed_image, config=custom_config)
         st.write(f"Texto bruto extraído: '{text}'")  # Depuração
         text = re.sub(r'[^A-Z0-9]', '', text.upper()).strip()
@@ -335,13 +357,13 @@ if menu_option == "Controle de Acesso":
     if capture_button:
         st.session_state.vehicle_info = None
         st.session_state.employees = []
-        st.info("Tire a foto com boa iluminação e a placa bem enquadrada.")
+        st.info("Tire a foto com boa iluminação, placa centralizada e sem reflexos. Enquadre a placa para ocupar a maior parte da imagem.")
         camera_image = st.camera_input("Capturar Placa")
         if camera_image is not None:
             img = Image.open(camera_image)
             img_array = np.array(img)
             img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-            st.image(img_bgr, channels="BGR", caption="Imagem Capturada")
+            st.image(img_bgr, channels="BGR", caption="Imagem Capturada", use_column_width=True)
             plate_text = extract_plate_text(img_bgr)
             if plate_text:
                 st.session_state.captured_plate = plate_text
@@ -563,7 +585,7 @@ elif menu_option == "Cadastros":
                 new_photo = st.file_uploader("Nova Foto do Colaborador", type=["jpg", "png", "jpeg"], key=f"edit_photo_{emp_id}")
                 if emp_photo:
                     st.image(Image.open(io.BytesIO(emp_photo)), caption="Foto Atual", width=150)
-                submitted = st.form_submit_button("Atualizar Colaborador")  # Corrigido: Botão dentro do formulário
+                submitted = st.form_submit_button("Atualizar Colaborador")
                 if submitted:
                     if new_name and new_position and new_tag:
                         photo_bytes = new_photo.read() if new_photo else emp_photo
@@ -721,5 +743,6 @@ elif menu_option == "Relatórios":
             )
         else:
             st.info("Nenhum registro de acesso encontrado")
-            
+
+
 
