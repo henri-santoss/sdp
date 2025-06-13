@@ -721,4 +721,5 @@ elif menu_option == "Relatórios":
             )
         else:
             st.info("Nenhum registro de acesso encontrado")
+            
 
